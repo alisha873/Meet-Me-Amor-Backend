@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Get Firebase Token</title>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  </head>
+  <body>
+    <h1>Firebase Token Generator</h1>
+    <input type="email" id="email" placeholder="Email" />
+    <input type="password" id="password" placeholder="Password" />
+    <button onclick="login()">Login</button>
+    <pre id="output"></pre>
+
+    <script>
+      // TODO: Replace with your actual Firebase config
+      const firebaseConfig = {
+        apiKey: "AIzaSyBfhbjU5C_GdZVtyha_lvvPr2pv0DlvYts",
+        authDomain: "date-planner-552e2.firebaseapp.com",
+        projectId: "date-planner-552e2",
+    };
+      firebase.initializeApp(firebaseConfig);
+      const auth = firebase.auth();
+
+      async function login() {
+        const email = document.getElementById("email").value;
+        const password = document.getElementById("password").value;
+
+        try {
+          const userCredential = await auth.signInWithEmailAndPassword(email, password);
+          const token = await userCredential.user.getIdToken();
+          document.getElementById("output").textContent = `Bearer ${token}`;
+        } catch (err) {
+          document.getElementById("output").textContent = `Error: ${err.message}`;
+        }
+      }
+    </script>
+  </body>
+</html>

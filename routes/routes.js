@@ -1,15 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const {login,createUser,saveFormData,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester} = require('../controllers/controllers.js');
-const verifyToken = require('./middleware/verifyFirebaseToken');
+const {createUser,saveFormData,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester} = require('../controllers/controllers.js');
+const verifyToken = require('../middleware/verifyFirebaseToken.js');
 
-router.post('/login', login);
 
-router.post('/createUser', createUser);
+router.post('/createUser', createUser); //route tested 
 
-router.post('/saveFormData', saveFormData);
+router.post('/saveFormData',verifyToken, saveFormData); //route tested
 
-router.post('/confirmAndStoreData', confirmAndStoreData);
+router.post('/confirmAndStoreData',verifyToken, confirmAndStoreData); //route tested
 
 router.post('/promptLogic',verifyToken, promptLogic);
 
