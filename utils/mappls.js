@@ -1,20 +1,58 @@
 const axios = require('axios');
 
-const placeSuggestions = async (queryText, lat, lon) => {
-  const apiKey = process.env.MAPPLS_API_KEY;
+// STEP 1: Get access token using OAuth
+const getMapplsAccessToken = async () => {
+  const clientId = process.env.MAPPLS_CLIENT_ID;
+  const clientSecret = process.env.MAPPLS_CLIENT_SECRET;
 
-  const response = await axios.get('https://atlas.mappls.com/places/auto-complete', {
+  const response = await axios.post('https://outpost.mappls.com/api/security/oauth/token', null, {
     params: {
-      keywords: queryText,
-      max: 5,
-      refLocation: `${lat},${lon}`, 
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret,
     },
     headers: {
-      Authorization: `bearer ${apiKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
     },
   });
 
-  return response.data.suggestedLocations || [];
+  return response.data.access_token;
 };
 
-module.exports = { placeSuggestions };
+// STEP 2: Get nearby places using keywords and refLocation
+
+const getNearbyPlaces = async ({keyword, latitude, longitude,  }) => {
+  try {
+    const accessToken = await getMapplsAccessToken();
+    console.log("🧪 Access Token:", accessToken);
+    console.log("📍 Params:", {
+      keywords: keyword,
+      refLocation: `${latitude},${longitude}`,
+    });
+
+    const response = await axios.get('https://atlas.mappls.com/api/places/nearby/json', {
+      params: {
+        keywords: keyword,
+        refLocation: `${latitude},${longitude}`,
+      },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    console.log("📦 Mappls API response:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Nearby Places API error:', {
+      status: error?.response?.status,
+      data: error?.response?.data,
+      message: error.message,
+    });
+    throw error;
+  }
+};
+
+module.exports = {
+  getMapplsAccessToken,
+  getNearbyPlaces,
+};

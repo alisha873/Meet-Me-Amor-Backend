@@ -36,22 +36,33 @@ const generateWithGemini = async (prompt, fallbackText) => {
 };
 
 // 1. MAPPLS LOCATION QUERY GENERATOR
-const refineSearchQuery = async ({ mood, budget, occasion, locationType }) => {
-  const prompt = 
-`You're a GenZ-style city explorer assistant. Convert the following vibes into a short, 3–6 word search-friendly location query (no full sentences, just phrases) for Mappls.
+const simplifyForMappls = async ({ mood, occasion, locationType }) => {
+  const prompt = `
+You're helping a location-based app suggest places using the Mappls Nearby Places API.
 
-Input:
-- Mood: ${mood}
-- Budget: ${budget}
-- Occasion: ${occasion}
-- Location Type: ${locationType}
+🔍 Based on the user's:
+- Mood: "${mood}"
+- Occasion: "${occasion}"
+- Location Type: "${locationType}"
 
-Examples: 
-"romantic rooftop dinner", "affordable art cafes", "sunset beach walk", "lux brunch spots"
+Give **only one** simple and valid keyword that matches what a real-world maps app would understand (e.g. "restaurant", "cafe", "museum", "bar", "bakery", "art gallery").
 
-Give just the phrase.`;
-  return await generateWithGemini(prompt, 'cafe nearby');
+⚠️ No adjectives, no emojis, no descriptions. Just one keyword or short business type, all lowercase. Do NOT return anything creative like "hipster coffee lounge".
+
+✅ Example Outputs:
+- restaurant
+- museum
+- cafe
+- nightclub
+- bookstore
+- shopping mall
+
+Your Output:
+`;
+
+  return await generateWithGemini(prompt, 'restaurant');
 };
+
 
 // 2. UNSPLASH OUTFIT PROMPT
 const generateUnsplashPrompt = async ({ mood, occasion }) => {
@@ -92,26 +103,34 @@ Respond with only the line.`;
 const pickBestItem = async ({ items, mood, budget, occasion, locationType }) => {
   const formattedItems = items.map((item, i) => `${i + 1}. ${item}`).join('\n');
 
-  const prompt = 
-`You're a Gen-Z AI assistant helping someone choose the best option for their perfect day.
+  const prompt = `
+You're a Gen-Z AI helping someone pick the best spot for a fun day based on their vibe.
 
-Inputs:
-- Mood: ${mood}
-- Budget: ${budget}
-- Occasion: ${occasion}
-- Location Type: ${locationType}
+🎯 Goal: From the list below, choose the **one best option** for the user based on:
 
-Options:
+- Mood: "${mood}"
+- Budget: "${budget}"
+- Occasion: "${occasion}"
+- Location Type: "${locationType}"
+
+📍 Options:
 ${formattedItems}
 
-Choose the one that fits best. Return only the number (1-${items.length}).`;
+✅ Output format: Return **only the number** of the best choice (1-${items.length}). No explanations, no text.
 
-  
-  const response = await generateWithGemini(prompt, '1'); 
-  const index = parseInt(response, 10) - 1;
+🚫 DO NOT return names, comments, emojis, or multiple numbers. Just a single digit.
 
-  return items[index] || items[0]; 
+🧪 Example:
+If the best choice is option 3, reply with:
+3
+`;
+
+  const response = await generateWithGemini(prompt, '1');
+  const index = parseInt(response.trim(), 10) - 1;
+
+  return items[index] || items[0];
 };
+
 
 // 5. DATE TIMELINE CREATOR
 const generateDateTimeline = async ({ place, outfit, mood, occasion, budget }) => {
@@ -136,8 +155,10 @@ Use 4–6 steps. Make it feel aesthetic and human.`;
   return await generateWithGemini(prompt, 'Timeline generation failed 😞');
 };
 
+// 
+
 module.exports = {
-  refineSearchQuery,
+  simplifyForMappls,
   generateUnsplashPrompt,
   generateQuip,
   pickBestItem,

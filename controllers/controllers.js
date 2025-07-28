@@ -3,8 +3,8 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const redis = require("../config/redisClient");
 const { v4: uuidv4 } = require('uuid');
-const { placeSuggestions } = require('../utils/mappls');
-const { refineSearchQuery } = require('../utils/gemini'); 
+const { getMapplsAccessToken, getNearbyPlaces } = require('../utils/mappls');
+const { simplifyForMappls,pickBestItem } = require('../utils/gemini'); 
 const { generateUnsplashPrompt } = require("../utils/gemini");
 const { generateQuip } = require("../utils/gemini");
 const { generateDateTimeline } = require('../utils/gemini');
@@ -133,55 +133,76 @@ const confirmAndStoreData = async (req, res) => {
   }
 };
 
-
-//get place recs logic
 const promptLogic = async (req, res, next) => {
   try {
-    const { uid } = req.user; // make sure it's set by verifyFirebaseToken
+    const { uid } = req.user;
     const sessionId = req.body.sessionId;
+    const { mood, budget, occasion, locationType, latitude, longitude } = req.body;
 
     const redisKey = `session:${uid}:${sessionId}`;
-    console.log("🔑 Redis key being fetched:", redisKey);
+    await redis.set(redisKey, JSON.stringify({ mood, budget, occasion, locationType, latitude, longitude }));
+    console.log("✅ Saved form to Redis:", redisKey);
 
-    const formDataRaw = await redis.get(redisKey);
+    // Step 1: Simplify prompt for Mappls
+    const keyword = await simplifyForMappls({ mood, occasion, locationType });
 
-    if (!formDataRaw) {
-      return res.status(404).json({ message: 'Form data not found' });
+    // Step 2: Get nearby places
+    const rawSuggestions = await getNearbyPlaces({keyword, latitude, longitude });
+
+    const places = rawSuggestions?.suggestedLocations || [];
+
+    if (!places.length) {
+      return res.status(404).json({ message: 'No nearby places found' });
     }
 
-    const { mood, budget, occasion, locationType, latitude, longitude } = JSON.parse(formDataRaw);
-    console.log("📝 Parsed form data:", { mood, budget, occasion, locationType, latitude, longitude });
-    const queryText = await refineSearchQuery({ mood, budget, occasion, locationType });
-     console.log("🔍 Refined search query:", queryText);
+    const options = places.map(p => `${p.placeName}, ${p.address}`);
 
-    // Fetch Mappls suggestions
-    const suggestions = await placeSuggestions(queryText, latitude, longitude);
-    console.log("📍 Suggestions from Mappls:", suggestions);
+    // Step 3: Let Gemini pick the best
+    const best = await pickBestItem({
+      items: options,
+      mood,
+      budget,
+      occasion,
+      locationType
+    });
 
-    const formatted = suggestions.map((place) => ({                     //formatting output so that only req fields reach frontend
-      name: place.placeName,
-      address: place.address,
-      latitude: place.latitude,
-      longitude: place.longitude,
-    }));
+    // Step 4: Format only the chosen place
+    const final = places.find(p =>
+       p.placeName.toLowerCase().includes(best.toLowerCase()) ||
+       best.toLowerCase().includes(p.placeName.toLowerCase())) || places[0];
 
-    return res.status(200).json({ places: formatted });
+
+    const formatted = {
+      name: final.placeName,
+      address: final.placeAddress,
+      latitude: final.latitude,
+      longitude: final.longitude,
+    };
+    console.log(" Gemini picked:", best);
+    console.log(" Final Match:", formatted.name);
+    console.log(" Final Match:", formatted.address);
+
+    return res.status(200).json({ place: formatted });
   } catch (error) {
+    console.error(" Error in promptLogic:", error.message);
     next(error);
   }
 };
 
 //flower shop nearby 
 const recommendFlowerShops = async (req, res) => {
-  const { lat, lng } = req.body; 
-  const mapplsKey = process.env.MAPPLS_API_KEY;
+  const { lat, lng } = req.body;
 
   try {
-    const response = await axios.get(`https://atlas.mappls.com/places/geo?keywords=flower shop&refLocation=${lat},${lng}&key=${mapplsKey}`);
-    
-    const shops = response.data?.suggestedLocations || [];
+    const data = await getNearbyPlaces({
+      keyword: 'flower shop',
+      latitude: lat,
+      longitude: lng,
+    });
 
-    const topShops = shops.slice(0, 5).map(shop => ({
+    const shops = data?.suggestedLocations?.slice(0, 2) || [];
+
+    const topShops = shops.map(shop => ({
       name: shop.placeName,
       address: shop.placeAddress,
       lat: shop.latitude,
@@ -195,6 +216,7 @@ const recommendFlowerShops = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch flower shops.' });
   }
 };
+
 
 //chat logic (need to work on this more)
 const chatLogic = async (req, res) => {
@@ -255,14 +277,19 @@ const chatLogic = async (req, res) => {
 const quippyLineLogic = async (req, res) => {
   try {
     const uid = req.user.uid;
-    const formDataRaw = await redis.get(uid);
+    const sessionId = req.body.sessionId; // assume client sends this
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "Session ID is required" });
+    }
+
+    const formDataRaw = await redis.get(`session:${uid}:${sessionId}`);
 
     if (!formDataRaw) {
       return res.status(404).json({ message: "Form data not found" });
     }
 
     const { mood, occasion } = JSON.parse(formDataRaw);
-
     const line = await generateQuip({ mood, occasion });
 
     return res.status(200).json({ quip: line });
@@ -270,6 +297,7 @@ const quippyLineLogic = async (req, res) => {
     return res.status(500).json({ message: "Failed to generate line" });
   }
 };
+
 
 // review logic
 const reviewLogic = async (req, res) => {
