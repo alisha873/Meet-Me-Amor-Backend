@@ -7,8 +7,6 @@ const verifyToken = require('../middleware/verifyFirebaseToken.js');
 
 router.post('/createUser', createUser); //route tested 
 
-router.post('/saveFormData',verifyToken, saveFormData); //route tested
-
 router.post('/confirmAndStoreData',verifyToken, confirmAndStoreData); //route tested
 
 router.post('/promptLogic',verifyToken, promptLogic); //route tested, add google map output
