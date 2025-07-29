@@ -1,13 +1,9 @@
 const axios= require ('axios');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const redis = require("../config/redisClient");
 const { v4: uuidv4 } = require('uuid');
 const { getMapplsAccessToken, getNearbyPlaces } = require('../utils/mappls');
-const { simplifyForMappls,pickBestItem } = require('../utils/gemini'); 
-const { generateUnsplashPrompt } = require("../utils/gemini");
-const { generateQuip } = require("../utils/gemini");
-const { generateDateTimeline } = require('../utils/gemini');
+const { simplifyForMappls,pickBestItem,generateUnsplashPrompt,generateQuip,generateDateTimeline } = require('../utils/gemini'); 
 
 //sign up controller
 const createUser=async(req,res)=>{
@@ -32,37 +28,13 @@ const createUser=async(req,res)=>{
 
 }
 
-//saving session data to redis
-const saveFormData = async(req,res)=>{
-    console.log("hit /saveFormData");
-    const {uid,email}=req.user;
-    const {mood,budget,location,status}=req.body;
-
-    if (!mood || !budget || !location || !status ){
-        return res.status(400).json({message:"All fields are required."});
-    }
-
-    const sessionId=uuidv4();
-
-    try{
-        await redis.setex(
-            `session:${uid}:${sessionId}`,7200,JSON.stringify({mood,budget,location,status})
-        );
-
-        return res.status(200).json({message:"Form data saved to redis for current session",sessionId})
-    }catch(err){
-        return res.status(500).json({ message: "Failed to save form data." });
-    }
-
-}
-
 //permanently storing data
 const confirmAndStoreData = async (req, res) => {
   const { uid } = req.user;
-  const { sessionId, selectedPlace } = req.body;
+  const { selectedPlace, mood, budget, location } = req.body;
 
-  if (!sessionId || !selectedPlace) {
-    return res.status(400).json({ message: "Session ID and selected place are required." });
+  if (!selectedPlace || !mood || !budget || !location) {
+    return res.status(400).json({ message: "Missing required fields." });
   }
 
   const requiredFields = ["id", "name", "address", "latitude", "longitude", "category"];
@@ -71,17 +43,7 @@ const confirmAndStoreData = async (req, res) => {
     return res.status(400).json({ message: "Incomplete selectedPlace data." });
   }
 
-  const redisKey = `session:${uid}:${sessionId}`;
-
   try {
-    const sessionData = await redis.get(redisKey);
-    if (!sessionData) {
-      return res.status(404).json({ message: "Session data not found or expired." });
-    }
-
-    const { mood, budget, location } = JSON.parse(sessionData);
-
-    // 1. Find user by uid
     const user = await prisma.user.findUnique({
       where: { uid },
     });
@@ -90,7 +52,6 @@ const confirmAndStoreData = async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // 2. Upsert the place
     await prisma.place.upsert({
       where: { id: selectedPlace.id },
       update: {
@@ -110,7 +71,6 @@ const confirmAndStoreData = async (req, res) => {
       },
     });
 
-    // 3. Create the userPreference linked with user
     await prisma.userPreference.create({
       data: {
         id: uuidv4(),
@@ -118,12 +78,9 @@ const confirmAndStoreData = async (req, res) => {
         budget,
         location,
         selectedPlace: selectedPlace.id,
-        userId: user.id, // Connect using user.id
+        userId: user.id,
       },
     });
-
-    // 4. Delete session from Redis
-    await redis.del(redisKey);
 
     return res.status(201).json({ message: "User preference saved successfully." });
 
@@ -133,61 +90,76 @@ const confirmAndStoreData = async (req, res) => {
   }
 };
 
+//reccs place
 const promptLogic = async (req, res, next) => {
   try {
-    const { uid } = req.user;
-    const sessionId = req.body.sessionId;
     const { mood, budget, occasion, locationType, latitude, longitude } = req.body;
 
-    const redisKey = `session:${uid}:${sessionId}`;
-    await redis.set(redisKey, JSON.stringify({ mood, budget, occasion, locationType, latitude, longitude }));
-    console.log("✅ Saved form to Redis:", redisKey);
+    if (!mood || !budget || !occasion || !locationType || !latitude || !longitude) {
+      return res.status(400).json({ message: "All fields are required." });
+    }
 
-    // Step 1: Simplify prompt for Mappls
+    // 🧠 Fetch user's past preferences for personalization
+    const pastPrefs = await prisma.userPreference.findMany({
+      where: { user: { uid: req.user.uid } },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    const pastPlaces = pastPrefs.map(p => p.selectedPlace?.name).filter(Boolean).join(', ');
+    const pastMoods = [...new Set(pastPrefs.map(p => p.mood))].join(', ');
+
+    // 📦 Step 1: Convert input to keyword using Gemini (optionally use history here)
     const keyword = await simplifyForMappls({ mood, occasion, locationType });
 
-    // Step 2: Get nearby places
-    const rawSuggestions = await getNearbyPlaces({keyword, latitude, longitude });
-
+    // 📍 Step 2: Query Mappls for places using that keyword
+    const rawSuggestions = await getNearbyPlaces({ keyword, latitude, longitude });
     const places = rawSuggestions?.suggestedLocations || [];
 
     if (!places.length) {
       return res.status(404).json({ message: 'No nearby places found' });
     }
 
+    // 🧠 Step 3: Use Gemini to rank & pick based on history + input
     const options = places.map(p => `${p.placeName}, ${p.address}`);
 
-    // Step 3: Let Gemini pick the best
     const best = await pickBestItem({
       items: options,
       mood,
       budget,
       occasion,
-      locationType
+      locationType,
+      history: {
+        pastPlaces,
+        pastMoods,
+      }
     });
 
-    // Step 4: Format only the chosen place
     const final = places.find(p =>
-       p.placeName.toLowerCase().includes(best.toLowerCase()) ||
-       best.toLowerCase().includes(p.placeName.toLowerCase())) || places[0];
-
+      p.placeName.toLowerCase().includes(best.toLowerCase()) ||
+      best.toLowerCase().includes(p.placeName.toLowerCase())
+    ) || places[0]; // fallback
 
     const formatted = {
       name: final.placeName,
       address: final.placeAddress,
       latitude: final.latitude,
       longitude: final.longitude,
+      category: final.category || keyword,
     };
-    console.log(" Gemini picked:", best);
-    console.log(" Final Match:", formatted.name);
-    console.log(" Final Match:", formatted.address);
+
+    console.log("Gemini picked:", best);
+    console.log("Final Match:", formatted.name);
+    console.log("Final Match:", formatted.address);
 
     return res.status(200).json({ place: formatted });
+
   } catch (error) {
-    console.error(" Error in promptLogic:", error.message);
+    console.error("Error in promptLogic:", error.message);
     next(error);
   }
 };
+
 
 //flower shop nearby 
 const recommendFlowerShops = async (req, res) => {
@@ -217,27 +189,30 @@ const recommendFlowerShops = async (req, res) => {
   }
 };
 
-
-//chat logic (need to work on this more)
+//chat logic
 const chatLogic = async (req, res) => {
   const { uid } = req.user;
-  const { isSatisfied, selectedPlace } = req.body;
+  const { isSatisfied, selectedPlace, mood, budget, occasion, locationType, latitude, longitude } = req.body;
 
-  if (!selectedPlace) {
-    return res.status(400).json({ message: "Selected place is required." });
+  if (!selectedPlace || !mood || !budget || !occasion || !locationType || !latitude || !longitude) {
+    return res.status(400).json({ message: "Missing required fields." });
   }
 
   try {
-    // Get session data from Redis
-    const sessionRaw = await redis.get(uid);
-    if (!sessionRaw) return res.status(404).json({ message: "Session data not found." });
-
-    const { mood, budget, occasion, locationType, latitude, longitude } = JSON.parse(sessionRaw);
-
     let chatMessage = '';
     let newSuggestions = [];
 
-    // If user is NOT satisfied, return fresh Mappls suggestions
+    // OPTIONAL: fetch user's past preferences to personalize response
+    const pastPrefs = await prisma.userPreference.findMany({
+      where: { user: { uid } },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+      include: { place: true },
+    });
+
+    const recentLocations = pastPrefs.map(p => p.place?.name).filter(Boolean).join(', ');
+    const usedMoods = [...new Set(pastPrefs.map(p => p.mood))].join(', ');
+
     if (isSatisfied === false) {
       const query = await refineSearchQuery({ mood, budget, occasion, locationType });
 
@@ -250,12 +225,14 @@ const chatLogic = async (req, res) => {
         longitude: place.longitude,
       }));
 
-      chatMessage = `Got it! Here are a few more places that match your vibe. Let me know which one you prefer this time.`;
+      chatMessage = `Got it! Here are a few more places that match your vibe. Let me know which one you like.`;
     } else {
-      // If satisfied or first time, generate friendly response
       const prompt = `
-      The user is planning a ${occasion} and is feeling "${mood}". They picked a place called "${selectedPlace.name}" at "${selectedPlace.address}".
-      Generate a short and friendly 2-line message acknowledging this, and ask if they'd like more options or go with this one.
+        The user is planning a ${occasion} and is feeling "${mood}". 
+        They picked a place called "${selectedPlace.name}" at "${selectedPlace.address}".
+        ${recentLocations ? `They’ve previously liked places like ${recentLocations}.` : ""}
+        ${usedMoods ? `Their mood trends have included: ${usedMoods}.` : ""}
+        Generate a short and friendly 2-line message acknowledging this and asking if they want more options or want to go with it.
       `;
 
       chatMessage = await generateChatMessage(prompt);
@@ -272,28 +249,21 @@ const chatLogic = async (req, res) => {
   }
 };
 
-
 // quip 
 const quippyLineLogic = async (req, res) => {
   try {
     const uid = req.user.uid;
-    const sessionId = req.body.sessionId; // assume client sends this
+    const { mood, occasion } = req.body;
 
-    if (!sessionId) {
-      return res.status(400).json({ message: "Session ID is required" });
+    if (!mood || !occasion) {
+      return res.status(400).json({ message: "Mood and occasion are required." });
     }
 
-    const formDataRaw = await redis.get(`session:${uid}:${sessionId}`);
-
-    if (!formDataRaw) {
-      return res.status(404).json({ message: "Form data not found" });
-    }
-
-    const { mood, occasion } = JSON.parse(formDataRaw);
     const line = await generateQuip({ mood, occasion });
 
     return res.status(200).json({ quip: line });
   } catch (err) {
+    console.error("Error generating quip:", err.message);
     return res.status(500).json({ message: "Failed to generate line" });
   }
 };
@@ -324,7 +294,7 @@ const reviewLogic = async (req, res) => {
   }
 };
 
-//llm suggests outfit from unsplash
+// llm suggests outfit from unsplash
 const fallbackKeywords = [
   "white tshirt",
   "straight blue jeans",
@@ -346,20 +316,17 @@ const isValidOutfitPhrase = (phrase) => {
 
 const outfitSuggester = async (req, res, next) => {
   try {
-    const uid = req.user.uid;
-    const formDataRaw = await redis.get(uid);
+    const { mood, occasion } = req.body;
 
-    if (!formDataRaw) {
-      return res.status(404).json({ message: "Form data not found" });
+    if (!mood || !occasion) {
+      return res.status(400).json({ message: "Mood and occasion are required." });
     }
-
-    const { mood, occasion } = JSON.parse(formDataRaw);
 
     const geminiOutput = await generateUnsplashPrompt({ mood, occasion });
     let outfitPhrase = geminiOutput?.toLowerCase().trim();
 
     if (!isValidOutfitPhrase(outfitPhrase)) {
-      outfitPhrase =fallbackKeywords[Math.floor(Math.random() * fallbackKeywords.length)];
+      outfitPhrase = fallbackKeywords[Math.floor(Math.random() * fallbackKeywords.length)];
     }
 
     const unsplashResponse = await axios.get("https://api.unsplash.com/search/photos", {
@@ -369,7 +336,7 @@ const outfitSuggester = async (req, res, next) => {
         orientation: "portrait",
       },
       headers: {
-        Authorization: `Client-ID SEiMIGT7oP7Bvge3rxsbzYw-K8T_7ybFMDkrXZjDFeE`,
+        Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}`,
       },
     });
 
@@ -389,23 +356,15 @@ const outfitSuggester = async (req, res, next) => {
   }
 };
 
-
-//create tim
+//create timeline for the date
 const createTimeline = async (req, res) => {
   try {
     const { uid } = req.user;
-    const { selectedPlace, selectedOutfit } = req.body;
+    const { selectedPlace, selectedOutfit, mood, budget, occasion } = req.body;
 
-    if (!selectedPlace || !selectedOutfit) {
-      return res.status(400).json({ message: "Place and outfit are required" });
+    if (!selectedPlace || !selectedOutfit || !mood || !budget || !occasion) {
+      return res.status(400).json({ message: "All fields are required" });
     }
-
-    const formDataRaw = await redis.get(uid);
-    if (!formDataRaw) {
-      return res.status(404).json({ message: "Form data not found" });
-    }
-
-    const { mood, budget, occasion } = JSON.parse(formDataRaw);
 
     const timeline = await generateDateTimeline({
       place: selectedPlace.name,
@@ -417,12 +376,12 @@ const createTimeline = async (req, res) => {
 
     return res.status(200).json({ timeline });
   } catch (err) {
+    console.error("Timeline generation error:", err);
     return res.status(500).json({ message: "Failed to generate date timeline" });
   }
 };
 
-//personalise 
 
-module.exports = {createUser,saveFormData,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester,recommendFlowerShops,createTimeline};
+module.exports = {createUser,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester,recommendFlowerShops,createTimeline};
 
 

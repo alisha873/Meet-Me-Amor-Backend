@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const {createUser,saveFormData,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester,recommendFlowerShops} = require('../controllers/controllers.js');
+const {createUser,saveFormData,confirmAndStoreData,promptLogic,chatLogic,quippyLineLogic,reviewLogic,outfitSuggester,recommendFlowerShops,createTimeline} = require('../controllers/controllers.js');
 const verifyToken = require('../middleware/verifyFirebaseToken.js');
 
 //need to add personalisation set up 
@@ -22,5 +22,7 @@ router.post('/quippyLineLogic',verifyToken, quippyLineLogic); //route tested,add
 router.post('/reviewLogic', verifyToken,reviewLogic);
 
 router.post('/outfitSuggester',verifyToken, outfitSuggester);
+
+router.post('/generateTimeline',verifyToken,createTimeline);
 
 module.exports = router;
