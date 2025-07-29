@@ -3,7 +3,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const { v4: uuidv4 } = require('uuid');
 const { getMapplsAccessToken, getNearbyPlaces } = require('../utils/mappls');
-const { simplifyForMappls,pickBestItem,generateUnsplashPrompt,generateQuip,generateDateTimeline } = require('../utils/gemini'); 
+const {generateWithGemini, simplifyForMappls,pickBestItem,generateUnsplashPrompt,generateQuip,generateDateTimeline } = require('../utils/gemini'); 
 
 //sign up controller
 const createUser=async(req,res)=>{
@@ -235,7 +235,7 @@ const chatLogic = async (req, res) => {
         Generate a short and friendly 2-line message acknowledging this and asking if they want more options or want to go with it.
       `;
 
-      chatMessage = await generateChatMessage(prompt);
+      chatMessage = await generateWithGemini(prompt);
     }
 
     return res.status(200).json({
@@ -278,12 +278,19 @@ const reviewLogic = async (req, res) => {
   }
 
   try {
+    const user = await prisma.user.findUnique({
+      where: { uid },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     const review = await prisma.review.create({
       data: {
-        uid,
-        placeId,
-        comment,
-        rating: rating || null,
+        userId: user.id,  
+        placeId,          
+        comment
       },
     });
 
@@ -293,6 +300,7 @@ const reviewLogic = async (req, res) => {
     return res.status(500).json({ error: 'Internal server error' });
   }
 };
+
 
 // llm suggests outfit from unsplash
 const fallbackKeywords = [

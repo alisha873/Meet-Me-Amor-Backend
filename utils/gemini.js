@@ -163,4 +163,5 @@ module.exports = {
   generateQuip,
   pickBestItem,
   generateDateTimeline,
+  generateWithGemini
 };
