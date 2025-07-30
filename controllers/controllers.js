@@ -191,6 +191,7 @@ const recommendFlowerShops = async (req, res) => {
 
 //chat logic
 const chatLogic = async (req, res) => {
+  console.log("chatLogic hit", req.body);
   const { uid } = req.user;
   const { isSatisfied, selectedPlace, mood, budget, occasion, locationType, latitude, longitude } = req.body;
 
@@ -214,7 +215,7 @@ const chatLogic = async (req, res) => {
     const usedMoods = [...new Set(pastPrefs.map(p => p.mood))].join(', ');
 
     if (isSatisfied === false) {
-      const query = await refineSearchQuery({ mood, budget, occasion, locationType });
+      const query = await generateWithGemini({ mood, budget, occasion, locationType });
 
       const suggestions = await placeSuggestions(query + " more options", latitude, longitude);
 
@@ -324,6 +325,7 @@ const isValidOutfitPhrase = (phrase) => {
 
 const outfitSuggester = async (req, res, next) => {
   try {
+    console.log("OS hit", req.body);
     const { mood, occasion } = req.body;
 
     if (!mood || !occasion) {
